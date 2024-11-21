@@ -14,6 +14,8 @@ from pathlib import Path
 import tempfile
 from types import NoneType
 import typing
+import os
+import glob
 
 import bpy
 import flask
@@ -351,6 +353,7 @@ class ServerApp(flask.Flask):
         temp_dir,
         blend_file: Path = None,
         bpy_settings_file: Path = None,
+        archive_dir: str = None
     ):
         super().__init__("drake_render_gltf_blender")
 
@@ -369,6 +372,19 @@ class ServerApp(flask.Flask):
             view_func=self._render_endpoint,
         )
 
+        # For replaying archive data
+        self.archive_dir = archive_dir
+        if archive_dir is not None:
+            self.archive_index = 0
+            filetype = 'png'
+            search_pattern = os.path.join(self.archive_dir, f'*.{filetype}')
+            file_list = glob.glob(search_pattern)
+            self.image_filenames = [os.path.basename(file) for file in file_list]
+            self.image_filenames.sort()
+
+            print("Saved rendered image files:")
+            print(self.image_filenames)
+
     def _root_endpoint(self):
         """Displays a banner page at the server root."""
         return """\
@@ -379,9 +395,13 @@ class ServerApp(flask.Flask):
     def _render_endpoint(self):
         """Accepts a request to render and returns the generated image."""
         try:
-            params = self._parse_params(flask.request)
-            buffer = self._render(params)
-            return flask.send_file(buffer, mimetype="image/png")
+            if self.archive_dir is None:
+                params = self._parse_params(flask.request)
+                buffer = self._render(params)
+                return flask.send_file(buffer, mimetype="image/png")
+            else: # return archived rendered image data
+                buffer = self._render_archived_data()
+                return flask.send_file(buffer, mimetype="image/png")
         except Exception as e:
             code = 500
             message = f"Internal server error: {repr(e)}"
@@ -451,6 +471,13 @@ class ServerApp(flask.Flask):
             params.scene.unlink(missing_ok=True)
             output_path.unlink(missing_ok=True)
 
+    def _render_archived_data(self):
+        image_full_path = os.path.join(self.archive_dir, self.image_filenames[self.archive_index])
+        print(f"Index: {self.archive_index} \nReading: {image_full_path}")
+        with open(image_full_path, "rb") as f:
+            buffer = io.BytesIO(f.read())
+        self.archive_index+=1
+        return buffer
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -487,6 +514,12 @@ def main():
         "The settings file will be applied after loading the --blend_file "
         "(if any) so that it has priority.",
     )
+    parser.add_argument(
+        "--archive_dir",
+        type=str,
+        default=None,
+        help="Path for server to replay archived image renderings.",
+    )
     args = parser.parse_args()
 
     prefix = "drake_blender_"
@@ -495,6 +528,7 @@ def main():
             temp_dir=temp_dir,
             blend_file=args.blend_file,
             bpy_settings_file=args.bpy_settings_file,
+            archive_dir=args.archive_dir
         )
         app.run(
             host=args.host, port=args.port, debug=args.debug, threaded=False
